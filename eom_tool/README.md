@@ -28,7 +28,7 @@ Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 *   `-s <sbdf list>`: List of SBDFs for PCIe devices (comma-separated)
 *   `-m <lane mask>`: Specify the lane mask (default: 0xff)
 *   `-a`: Run EOM on all lanes
-*   `-f <output_file>`: Specify the path and output file name
+*   `-f <output_file>`: Specify the path and output file name. This is optional — if not specified, the data is printed to stdout.
 *   `-t <dwell time in us>`: Specify the dwell time in microseconds
 *   `-g`: Force selecting the device
 *   `-r <RC index>`: Specify the RC index
