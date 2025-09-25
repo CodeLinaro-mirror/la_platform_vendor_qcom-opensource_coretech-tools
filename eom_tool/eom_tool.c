@@ -106,7 +106,7 @@ static void print_usage(const char *prog);
 static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwell_time_us,
 			      char *output_file, size_t output_file_size,
 			      struct eom_target *targets, int *num_targets, int *all_lanes,
-			      int *skip_select);
+			      int *skip_select, bool *half_eye);
 static void *start_eom(void *arg);
 static eom_error_t get_chip_info(char *chip_id, int *chip_family, int *platform_version,
 				 char *serial_num);
@@ -122,7 +122,7 @@ static eom_error_t write_eom_output(const char *output_file,
 				    struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
 				    volatile int thread_done[MAX_SBDFS][MAX_LANES],
 				    struct eom_target *targets, int num_targets, int all_lanes,
-				    int type_index);
+				    int type_index, bool half_eye);
 static void cleanup_resources(int lane_fd, int event_fd);
 static int is_stop_requested(void);
 static void set_stop_requested(int value);
@@ -339,29 +339,31 @@ static void print_usage(const char *prog)
 	printf("  -m <lane mask>   : Specify the lane mask (default: 0x%02x)\n", DEFAULT_LANE_MASK);
 	printf("  -g               : Force selecting the device\n");
 	printf("  -a               : Run EOM on all available lanes\n");
+	printf("  -h               : Enable half eye data mode\n");
 	printf("  -f <output_file> : Specify the path and output file name\n");
 	printf("  -t <dwell_time>  : Specify the dwell time in microseconds (default: %d)\n",
 			DEFAULT_DWELL_TIME_US);
 	printf("Examples:\n");
 	printf("  %s -d pcie -s 0:0:0.0,1:0:0.0 -m 0x3,0x3 -a -f ./eom_output\n", prog);
 	printf("  %s -d pcie -s 0:0:0.0,1:0:0.0 -g -a -f ./eom_output -t 200000\n", prog);
+	printf("  %s -d usb -s 0:0:0:0 -m 0x1 -h -f ./eom_output\n", prog);
 }
 
 static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwell_time_us,
 			      char *output_file, size_t output_file_size,
 			      struct eom_target *targets, int *num_targets, int *all_lanes,
-			      int *skip_select)
+			      int *skip_select, bool *half_eye)
 {
 	int opt;
 	eom_error_t result;
 
 	if (!argv || !type_index || !dwell_time_us || !output_file ||
-		!targets || !num_targets || !all_lanes || !skip_select) {
+		!targets || !num_targets || !all_lanes || !skip_select || !half_eye) {
 		fprintf(stderr, "Error: Invalid parameters passed to parse_args\n");
 		return EOM_ERROR_INVALID_ARGS;
 	}
 
-	while ((opt = getopt(argc, argv, "d:s:m:t:f:ag")) != -1) {
+	while ((opt = getopt(argc, argv, "d:s:m:t:f:agh")) != -1) {
 		switch (opt) {
 		case 'd':
 			*type_index = -1;
@@ -419,6 +421,10 @@ static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwel
 
 		case 'g':
 			*skip_select = 0;
+			break;
+
+		case 'h':
+			*half_eye = true;
 			break;
 
 		default:
@@ -814,7 +820,7 @@ static eom_error_t write_eom_output(const char *output_file,
 				    struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
 				    volatile int thread_done[MAX_SBDFS][MAX_LANES],
 				    struct eom_target *targets, int num_targets, int all_lanes,
-				    int type_index)
+				    int type_index, bool half_eye)
 {
 	char serial_num[MAX_CHIP_INFO_LENGTH] = { 0 };
 	char chip_id[MAX_CHIP_INFO_LENGTH] = { 0 };
@@ -858,6 +864,7 @@ static eom_error_t write_eom_output(const char *output_file,
 		fprintf(fp, "     \"time_units\": \"ps\",\n");
 		fprintf(fp, "     \"voltage_scale\": 1.5,\n");
 		fprintf(fp, "     \"voltage_units\": \"mV\",\n");
+		fprintf(fp, "     \"half_eye_data\": \"%s\",\n", half_eye ? "true" : "false");
 		fprintf(fp, "     \"note\": \"\",\n");
 		fprintf(fp, "     \"lanes\": [\n");
 
@@ -946,6 +953,7 @@ int main(int argc, char *argv[])
 	int type_index = -1;
 	int num_targets = 0;
 	int skip_select = 1;
+	bool half_eye = false;
 	int all_lanes = 1;
 	eom_error_t result;
 
@@ -955,7 +963,7 @@ int main(int argc, char *argv[])
 	signal(SIGINT, sigint_handler);
 
 	result = parse_args(argc, argv, &type_index, &dwell_time_us, output_file,
-			    sizeof(output_file), targets, &num_targets, &all_lanes, &skip_select);
+			    sizeof(output_file), targets, &num_targets, &all_lanes, &skip_select, &half_eye);
 	if (result != EOM_SUCCESS) {
 		fprintf(stderr, "Error: Failed to parse arguments (code: %d)\n", result);
 		return EXIT_FAILURE;
@@ -988,7 +996,7 @@ int main(int argc, char *argv[])
 	}
 
 	result = write_eom_output(output_file, thread_args, thread_done, targets, num_targets,
-				  all_lanes, type_index);
+				  all_lanes, type_index, half_eye);
 	if (result != EOM_SUCCESS) {
 		fprintf(stderr, "Error: Failed to write EOM output (code: %d)\n", result);
 		return EXIT_FAILURE;
