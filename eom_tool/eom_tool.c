@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,7 +107,7 @@ static void print_usage(const char *prog);
 static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwell_time_us,
 			      char *output_file, size_t output_file_size,
 			      struct eom_target *targets, int *num_targets, int *all_lanes,
-			      int *skip_select, bool *half_eye);
+			      int *skip_select, int *file_output_specified, bool *half_eye);
 static void *start_eom(void *arg);
 static eom_error_t get_chip_info(char *chip_id, int *chip_family, int *platform_version,
 				 char *serial_num);
@@ -118,11 +119,12 @@ static eom_error_t run_eom_threads(struct eom_thread_args thread_args[MAX_SBDFS]
 				   volatile int thread_done[MAX_SBDFS][MAX_LANES],
 				   struct eom_target *targets, int num_targets, int type_index,
 				   int all_lanes);
+static int eom_data_fprintf(FILE *file_fp, const char *format, ...);
 static eom_error_t write_eom_output(const char *output_file,
 				    struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
 				    volatile int thread_done[MAX_SBDFS][MAX_LANES],
 				    struct eom_target *targets, int num_targets, int all_lanes,
-				    int type_index, bool half_eye);
+				    int type_index, int file_output_specified,  bool half_eye);
 static void cleanup_resources(int lane_fd, int event_fd);
 static int is_stop_requested(void);
 static void set_stop_requested(int value);
@@ -352,16 +354,19 @@ static void print_usage(const char *prog)
 static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwell_time_us,
 			      char *output_file, size_t output_file_size,
 			      struct eom_target *targets, int *num_targets, int *all_lanes,
-			      int *skip_select, bool *half_eye)
+			      int *skip_select, int *file_output_specified, bool *half_eye)
 {
 	int opt;
 	eom_error_t result;
 
 	if (!argv || !type_index || !dwell_time_us || !output_file ||
-		!targets || !num_targets || !all_lanes || !skip_select || !half_eye) {
+		!targets || !num_targets || !all_lanes || !skip_select || !file_output_specified ||
+		!half_eye) {
 		fprintf(stderr, "Error: Invalid parameters passed to parse_args\n");
 		return EOM_ERROR_INVALID_ARGS;
 	}
+
+	*file_output_specified = 0;
 
 	while ((opt = getopt(argc, argv, "d:s:m:t:f:agh")) != -1) {
 		switch (opt) {
@@ -416,6 +421,7 @@ static eom_error_t parse_args(int argc, char *argv[], int *type_index, int *dwel
 				fprintf(stderr, "Error: Output file path truncated\n");
 				return EOM_ERROR_BUFFER_OVERFLOW;
 			}
+			*file_output_specified = 1;
 			printf("Output file: %s\n", output_file);
 			break;
 
@@ -815,30 +821,47 @@ static eom_error_t run_eom_threads(struct eom_thread_args thread_args[MAX_SBDFS]
 	return EOM_SUCCESS;
 }
 
-/* Write EOM measurement data to JSON output file */
-static eom_error_t write_eom_output(const char *output_file,
-				    struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
-				    volatile int thread_done[MAX_SBDFS][MAX_LANES],
-				    struct eom_target *targets, int num_targets, int all_lanes,
-				    int type_index, bool half_eye)
+/* Custom fprintf-like function that writes to a file if provided, otherwise to stdout */
+static int eom_data_fprintf(FILE *file_fp, const char *format, ...)
+{
+	va_list args;
+	int ret = 0;
+
+	/* Initialize variable argument lists */
+	va_start(args, format);
+
+	/* Write to file if file pointer is provided */
+	if (file_fp) {
+		ret = vfprintf(file_fp, format, args);
+	} else {
+		/* if no outfile was provided write to stdout */
+		ret = vfprintf(stdout, format, args);
+	}
+
+	/* Clean up */
+	va_end(args);
+
+	/* Return the result from stdout write (primary output) */
+	return ret;
+}
+
+/* Helper function to write JSON data using eom_data_fprintf */
+static eom_error_t write_json_data(FILE *file_fp,
+				   struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
+				   volatile int thread_done[MAX_SBDFS][MAX_LANES],
+				   struct eom_target *targets, int num_targets, int all_lanes,
+				   int type_index, bool half_eye)
 {
 	char serial_num[MAX_CHIP_INFO_LENGTH] = { 0 };
 	char chip_id[MAX_CHIP_INFO_LENGTH] = { 0 };
 	int platform_version = 0;
 	int chip_family = 0;
-	FILE *fp = NULL;
 	eom_error_t result;
 
-	if (!output_file || !thread_args || !thread_done || !targets ||
+	if (!thread_args || !thread_done || !targets ||
 		num_targets <= 0 || type_index < 0 || type_index >= (int)TYPE_MAX) {
-		fprintf(stderr, "Error: Invalid parameters for writing EOM output\n");
+		fprintf(stderr, "Error: Invalid parameters for writing JSON data\n");
 		return EOM_ERROR_INVALID_ARGS;
-	}
-
-	fp = fopen(output_file, "w");
-	if (!fp) {
-		perror("Failed to open output file");
-		return EOM_ERROR_FILE_IO;
 	}
 
 	result = get_chip_info(chip_id, &chip_family, &platform_version, serial_num);
@@ -846,27 +869,27 @@ static eom_error_t write_eom_output(const char *output_file,
 		fprintf(stderr, "Warning: Failed to get chip info, using defaults\n");
 
 	/* Write JSON header */
-	fprintf(fp, "{\n");
-	fprintf(fp, "  \"version\": \"1.0.0\",\n");
-	fprintf(fp, "  \"results\": [\n");
+	eom_data_fprintf(file_fp, "{\n");
+	eom_data_fprintf(file_fp, "  \"version\": \"1.0.0\",\n");
+	eom_data_fprintf(file_fp, "  \"results\": [\n");
 
 	for (int j = 0; j < num_targets; j++) {
-		fprintf(fp, "     {\n");
-		fprintf(fp, "     \"chip_info\": {\n");
-		fprintf(fp, "        \"id\": \"%s\",\n", chip_id);
-		fprintf(fp, "        \"family\": %d,\n", chip_family);
-		fprintf(fp, "        \"version\": %d,\n", platform_version);
-		fprintf(fp, "        \"serial_num\": \"%s\"\n", serial_num);
-		fprintf(fp, "     },\n");
-		fprintf(fp, "     \"interface\": \"%s\",\n", eom_device_names[type_index]);
-		fprintf(fp, "     \"instance\": %d,\n", targets[j].segment);
-		fprintf(fp, "     \"time_scale\": 1.95,\n");
-		fprintf(fp, "     \"time_units\": \"ps\",\n");
-		fprintf(fp, "     \"voltage_scale\": 1.5,\n");
-		fprintf(fp, "     \"voltage_units\": \"mV\",\n");
-		fprintf(fp, "     \"half_eye_data\": \"%s\",\n", half_eye ? "true" : "false");
-		fprintf(fp, "     \"note\": \"\",\n");
-		fprintf(fp, "     \"lanes\": [\n");
+		eom_data_fprintf(file_fp, "     {\n");
+		eom_data_fprintf(file_fp, "     \"chip_info\": {\n");
+		eom_data_fprintf(file_fp, "        \"id\": \"%s\",\n", chip_id);
+		eom_data_fprintf(file_fp, "        \"family\": %d,\n", chip_family);
+		eom_data_fprintf(file_fp, "        \"version\": %d,\n", platform_version);
+		eom_data_fprintf(file_fp, "        \"serial_num\": \"%s\"\n", serial_num);
+		eom_data_fprintf(file_fp, "     },\n");
+		eom_data_fprintf(file_fp, "     \"interface\": \"%s\",\n", eom_device_names[type_index]);
+		eom_data_fprintf(file_fp, "     \"instance\": %d,\n", targets[j].segment);
+		eom_data_fprintf(file_fp, "     \"time_scale\": 1.95,\n");
+		eom_data_fprintf(file_fp, "     \"time_units\": \"ps\",\n");
+		eom_data_fprintf(file_fp, "     \"voltage_scale\": 1.5,\n");
+		eom_data_fprintf(file_fp, "     \"voltage_units\": \"mV\",\n");
+		eom_data_fprintf(file_fp, "     \"half_eye_data\": \"%s\",\n", half_eye ? "true" : "false");
+		eom_data_fprintf(file_fp, "     \"note\": \"\",\n");
+		eom_data_fprintf(file_fp, "     \"lanes\": [\n");
 
 		int lane_count = 0;
 		/* Write data for each lane that was processed */
@@ -877,12 +900,12 @@ static eom_error_t write_eom_output(const char *output_file,
 				continue;
 
 			if (lane_count > 0)
-				fprintf(fp, ",\n");
+				eom_data_fprintf(file_fp, ",\n");
 
-			fprintf(fp, "        {\n");
-			fprintf(fp, "        \"lane_number\": %d,\n", lane_num);
-			fprintf(fp, "        \"note\": \"\",\n");
-			fprintf(fp, "        \"eye\": [\n");
+			eom_data_fprintf(file_fp, "        {\n");
+			eom_data_fprintf(file_fp, "        \"lane_number\": %d,\n", lane_num);
+			eom_data_fprintf(file_fp, "        \"note\": \"\",\n");
+			eom_data_fprintf(file_fp, "        \"eye\": [\n");
 
 			/* Read EOM measurement data from lane device if thread completed successfully */
 			if (thread_done[j][lane_num] == DONE) {
@@ -891,7 +914,7 @@ static eom_error_t write_eom_output(const char *output_file,
 				if (lane_fd < 0) {
 					fprintf(stderr, "Warning: Failed to open lane device(%s) for reading\n",
 						thread_args[j][lane_num].lane_device);
-					fprintf(fp, "              [0, 0, -1]");
+					eom_data_fprintf(file_fp, "              [0, 0, -1]");
 				} else {
 					struct eom_entry entry;
 					int first_entry = 1;
@@ -900,43 +923,89 @@ static eom_error_t write_eom_output(const char *output_file,
 					/* Read all EOM measurement points from device */
 					while ((bytes_read = read(lane_fd, &entry, sizeof(entry))) == sizeof(entry)) {
 						if (!first_entry)
-							fprintf(fp, ",\n");
+							eom_data_fprintf(file_fp, ",\n");
 
-						fprintf(fp, "              [%d, %d, %d]", entry.x,
+						eom_data_fprintf(file_fp, "              [%d, %d, %d]", entry.x,
 							entry.y, entry.error_count);
 						first_entry = 0;
 					}
 
 					if (first_entry)
-						fprintf(fp, "              [0, 0, 0]");
+						eom_data_fprintf(file_fp, "              [0, 0, 0]");
 
 					close(lane_fd);
 				}
 			} else {
-				fprintf(fp, "              [0, 0, -1]");
+				eom_data_fprintf(file_fp, "              [0, 0, -1]");
 				fprintf(stderr, "Warning: Lane %d failed to complete\n", lane_num);
 			}
 
-			fprintf(fp, "\n           ]\n");
-			fprintf(fp, "        }");
+			eom_data_fprintf(file_fp, "\n           ]\n");
+			eom_data_fprintf(file_fp, "        }");
 			lane_count++;
 		}
 
-		fprintf(fp, "\n        ]\n");
+		eom_data_fprintf(file_fp, "\n        ]\n");
 		if (j == num_targets - 1)
-			fprintf(fp, "     }\n");
+			eom_data_fprintf(file_fp, "     }\n");
 		else
-			fprintf(fp, "     },\n");
+			eom_data_fprintf(file_fp, "     },\n");
 
+	}
+	eom_data_fprintf(file_fp, "  ]\n");
+	eom_data_fprintf(file_fp, "}\n");
+
+	for (int j = 0; j < num_targets; j++)
 		fprintf(stdout, "EOM Data completed for RC %d\n", targets[j].segment);
+
+	return EOM_SUCCESS;
+}
+
+/* Write EOM measurement data to JSON output file and/or stdout */
+static eom_error_t write_eom_output(const char *output_file,
+				    struct eom_thread_args thread_args[MAX_SBDFS][MAX_LANES],
+				    volatile int thread_done[MAX_SBDFS][MAX_LANES],
+				    struct eom_target *targets, int num_targets, int all_lanes,
+				    int type_index, int file_output_specified, bool half_eye)
+{
+	FILE *fp = NULL;
+	eom_error_t result;
+
+	if (!output_file || !thread_args || !thread_done || !targets ||
+		num_targets <= 0 || type_index < 0 || type_index >= (int)TYPE_MAX) {
+		fprintf(stderr, "Error: Invalid parameters for writing EOM output\n");
+
+		return EOM_ERROR_INVALID_ARGS;
 	}
 
-	fprintf(fp, "  ]\n");
-	fprintf(fp, "}\n");
+	/* Open file for writing if -f was specified */
+	if (file_output_specified) {
+		fp = fopen(output_file, "w");
+		if (!fp) {
+			perror("Failed to open output file");
+			return EOM_ERROR_FILE_IO;
+		}
+	}
 
-	if (fclose(fp) != 0) {
-		perror("Failed to close output file");
-		return EOM_ERROR_FILE_IO;
+	/* Write JSON data using eom_data_fprintf (to file if specified, otherwise to stdout) */
+	result = write_json_data(fp, thread_args, thread_done, targets, num_targets, all_lanes,
+				 type_index, half_eye);
+	if (result != EOM_SUCCESS) {
+
+		fprintf(stderr, "Error: Failed to write JSON data (code: %d)\n", result);
+		if (fp)
+			fclose(fp);
+
+		return result;
+	}
+
+	/* Close file if it was opened */
+	if (fp) {
+
+		if (fclose(fp) != 0) {
+			perror("Failed to close output file");
+			return EOM_ERROR_FILE_IO;
+		}
 	}
 
 	return EOM_SUCCESS;
@@ -950,6 +1019,7 @@ int main(int argc, char *argv[])
 	pthread_t threads[MAX_SBDFS][MAX_LANES];
 	struct eom_target targets[MAX_SBDFS];
 	int dwell_time_us = DEFAULT_DWELL_TIME_US;
+	int file_output_specified = 0;
 	int type_index = -1;
 	int num_targets = 0;
 	int skip_select = 1;
@@ -963,7 +1033,8 @@ int main(int argc, char *argv[])
 	signal(SIGINT, sigint_handler);
 
 	result = parse_args(argc, argv, &type_index, &dwell_time_us, output_file,
-			    sizeof(output_file), targets, &num_targets, &all_lanes, &skip_select, &half_eye);
+			    sizeof(output_file), targets, &num_targets, &all_lanes, &skip_select,
+			    &file_output_specified, &half_eye);
 	if (result != EOM_SUCCESS) {
 		fprintf(stderr, "Error: Failed to parse arguments (code: %d)\n", result);
 		return EXIT_FAILURE;
@@ -996,13 +1067,17 @@ int main(int argc, char *argv[])
 	}
 
 	result = write_eom_output(output_file, thread_args, thread_done, targets, num_targets,
-				  all_lanes, type_index, half_eye);
+				  all_lanes, type_index, file_output_specified, half_eye);
 	if (result != EOM_SUCCESS) {
 		fprintf(stderr, "Error: Failed to write EOM output (code: %d)\n", result);
 		return EXIT_FAILURE;
 	}
 
-	printf("EOM tool completed successfully. Output written to: %s\n", output_file);
+	if (file_output_specified)
+		printf("EOM tool completed successfully. Output written to file: %s\n",
+			output_file);
+	else
+		printf("EOM tool completed successfully. Output written to stdout\n");
 
 	return EXIT_SUCCESS;
 }
