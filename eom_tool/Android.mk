@@ -5,8 +5,8 @@ LOCAL_MODULE := eom_tool
 LOCAL_MODULE_TAGS := optional
 LOCAL_VENDOR_MODULE := true
 LOCAL_SRC_FILES := eom_tool.c
-LOCAL_C_INCLUDES+= $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
-LOCAL_ADDITIONAL_DEPENDENCIES += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
+# Instead of TARGET_OUT_HEADERS or KERNEL_OBJ, use header library
+LOCAL_HEADER_LIBRARIES := qti_kernel_headers
 # Moved to data partition for consistent availability
 LOCAL_MODULE_PATH := $(TARGET_OUT_DATA)/coretech-tools
 
