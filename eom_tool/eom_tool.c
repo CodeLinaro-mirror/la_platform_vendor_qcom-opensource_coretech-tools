@@ -295,7 +295,7 @@ static eom_error_t parse_lane_masks(const char *input, struct eom_target *target
 	token = strtok_r(str, ",", &saveptr2);
 
 	for (int i = 0; i < *num_targets && token; i++) {
-		if (sscanf(token, "%hhx", &targets[i].lane_mask) != 1) {
+		if (sscanf(token, "%6hx", &targets[i].lane_mask) != 1) {
 			fprintf(stderr, "Error: Unable to read Lane Mask for target %d: %s\n", i,
 				token);
 			result = EOM_ERROR_INVALID_ARGS;
