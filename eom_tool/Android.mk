@@ -7,8 +7,6 @@ LOCAL_VENDOR_MODULE := true
 LOCAL_SRC_FILES := eom_tool.c
 # Instead of TARGET_OUT_HEADERS or KERNEL_OBJ, use header library
 LOCAL_HEADER_LIBRARIES := qti_kernel_headers
-# Moved to data partition for consistent availability
-LOCAL_MODULE_PATH := $(TARGET_OUT_DATA)/coretech-tools
 
 #Compiler flags
 LOCAL_CFLAGS := -Wall -Wextra -Werror
